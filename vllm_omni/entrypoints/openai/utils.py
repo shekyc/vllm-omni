@@ -53,3 +53,24 @@ def parse_lora_request(lora_body: Any) -> tuple[LoRARequest | None, float | None
 
     scale = float(lora_scale) if lora_scale is not None else None
     return LoRARequest(str(lora_name), int(lora_int_id), str(lora_path)), scale
+
+
+def resolve_diffusion_od_config(engine_client: Any, diffusion_engine: Any = None) -> Any:
+    """Resolve the OmniDiffusionConfig from engine_client or diffusion engine."""
+    od_config = None
+    if hasattr(engine_client, "get_diffusion_od_config"):
+        od_config = engine_client.get_diffusion_od_config()
+    if od_config is None and diffusion_engine is not None:
+        if hasattr(diffusion_engine, "get_diffusion_od_config"):
+            od_config = diffusion_engine.get_diffusion_od_config()
+        else:
+            od_config = getattr(diffusion_engine, "od_config", None)
+    return od_config
+
+
+def is_single_stage_diffusion(engine_client: Any) -> bool:
+    """Return True if the active pipeline is a single-stage diffusion graph."""
+    stage_configs = getattr(engine_client, "stage_configs", None) or []
+    if len(stage_configs) != 1:
+        return False
+    return get_stage_type(stage_configs[0]).lower() == "diffusion"
