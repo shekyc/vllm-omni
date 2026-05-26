@@ -98,6 +98,10 @@ class StageDiffusionProc:
                 od_config.model_class_name = "BagelPipeline"
                 od_config.tf_model_config = TransformerConfig()
                 od_config.update_multimodal_support()
+            elif model_type == "neo_chat":
+                od_config.model_class_name = "SenseNovaU1Pipeline"
+                od_config.tf_model_config = TransformerConfig()
+                od_config.update_multimodal_support()
             elif model_type == "nextstep":
                 if od_config.model_class_name is None:
                     od_config.model_class_name = "NextStep11Pipeline"

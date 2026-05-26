@@ -34,6 +34,21 @@ class SupportAudioOutput(Protocol):
 
 
 @runtime_checkable
+class SupportsComponentDiscovery(Protocol):
+    """Protocol for pipelines that explicitly expose offload component names."""
+
+    _dit_modules: ClassVar[list[str]]
+    _encoder_modules: ClassVar[list[str]]
+    _vae_modules: ClassVar[list[str]]
+    _resident_modules: ClassVar[list[str]]
+
+
+@runtime_checkable
+class SupportsModuleOffload(SupportsComponentDiscovery, Protocol):
+    """Backward-compatible alias for explicit offload component discovery."""
+
+
+@runtime_checkable
 class SupportsStepExecution(Protocol):
     """State-driven step-level execution protocol for diffusion pipelines.
 

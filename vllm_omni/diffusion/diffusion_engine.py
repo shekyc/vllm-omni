@@ -61,6 +61,34 @@ def supports_audio_output(model_class_name: str) -> bool:
     return bool(getattr(model_cls, "support_audio_output", False))
 
 
+def get_extra_body_params(model_class_name: str) -> frozenset[str]:
+    """Return the set of extra_body keys accepted by a pipeline.
+
+    Each pipeline can declare ``EXTRA_BODY_PARAMS: ClassVar[frozenset[str]]``
+    to advertise which request-level parameters should be forwarded from
+    ``extra_body`` to ``OmniDiffusionSamplingParams.extra_args``.
+    Returns an empty frozenset when the pipeline does not declare any.
+    """
+    model_cls = DiffusionModelRegistry._try_load_model_cls(model_class_name)
+    if model_cls is None:
+        return frozenset()
+    return frozenset(getattr(model_cls, "EXTRA_BODY_PARAMS", frozenset()))
+
+
+def get_extra_output_params(model_class_name: str) -> frozenset[str]:
+    """Return the set of custom_output keys to expose in API response metrics.
+
+    Each pipeline can declare ``EXTRA_OUTPUT_PARAMS: ClassVar[frozenset[str]]``
+    to advertise which ``DiffusionOutput.custom_output`` keys should be
+    copied into the response ``metrics`` dict.
+    Returns an empty frozenset when the pipeline does not declare any.
+    """
+    model_cls = DiffusionModelRegistry._try_load_model_cls(model_class_name)
+    if model_cls is None:
+        return frozenset()
+    return frozenset(getattr(model_cls, "EXTRA_OUTPUT_PARAMS", frozenset()))
+
+
 class DiffusionEngine:
     """The diffusion engine for vLLM-Omni diffusion models."""
 
@@ -177,12 +205,28 @@ class DiffusionEngine:
         if self.pre_process_func is not None:
             metrics["preprocessing_time_ms"] = preprocess_time * 1000
 
+        # Single-stage pipelines may return text via custom_output.
+        is_text_output = isinstance(output_data, str) and output.custom_output.get("text_output") is not None
+
         # Handle single request or multiple requests
         if len(request.prompts) == 1:
             # Single request: return single OmniRequestOutput
             prompt = request.prompts[0]
             request_id = request.request_ids[0] if request.request_ids else ""
 
+            if is_text_output:
+                return [
+                    OmniRequestOutput.from_diffusion(
+                        request_id=request_id,
+                        images=[],
+                        prompt=prompt,
+                        metrics=metrics,
+                        custom_output=output.custom_output or {},
+                        final_output_type="text",
+                        stage_durations=output.stage_durations,
+                        peak_memory_mb=output.peak_memory_mb,
+                    ),
+                ]
             if supports_audio_output(self.od_config.model_class_name):
                 request_audio_payload = outputs[0] if len(outputs) == 1 else outputs
                 return [

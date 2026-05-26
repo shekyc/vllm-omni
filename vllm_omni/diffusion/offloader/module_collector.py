@@ -16,6 +16,8 @@ class PipelineModules:
     encoders: list[nn.Module]
     encoder_names: list[str]
     vae: nn.Module | None = None
+    resident_modules: list[nn.Module] | None = None
+    resident_names: list[str] | None = None
 
 
 class ModuleDiscovery:
@@ -24,6 +26,28 @@ class ModuleDiscovery:
     DIT_ATTRS = ["transformer", "transformer_2", "dit", "language_model", "transformer_blocks"]
     ENCODER_ATTRS = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder"]
     VAE_ATTRS = ["vae"]
+
+    @staticmethod
+    def _get_named_modules(pipeline: nn.Module, attrs: list[str]) -> tuple[list[nn.Module], list[str]]:
+        modules: list[nn.Module] = []
+        names: list[str] = []
+
+        for attr in attrs:
+            module_obj = getattr(pipeline, attr, None)
+            if module_obj is None:
+                continue
+
+            if not isinstance(module_obj, nn.Module):
+                logger.warning("Expected %s to be nn.Module, got %r", attr, type(module_obj))
+                continue
+
+            if module_obj in modules:
+                continue
+
+            modules.append(module_obj)
+            names.append(attr)
+
+        return modules, names
 
     @staticmethod
     def discover(pipeline: nn.Module) -> PipelineModules:
@@ -36,40 +60,27 @@ class ModuleDiscovery:
             PipelineModules with lists of discovered modules and names
         """
         # Collect DiT/transformer modules
-        dit_modules: list[nn.Module] = []
-        dit_names: list[str] = []
-        for attr in ModuleDiscovery.DIT_ATTRS:
-            if not hasattr(pipeline, attr):
-                continue
-            module_obj = getattr(pipeline, attr)
-            if module_obj is None:
-                continue
-
-            if not isinstance(module_obj, nn.Module):
-                logger.warning(f"Expected {attr} to be nn.Module, got {type(module_obj)!r}")
-                continue
-
-            if module_obj in dit_modules:
-                continue
-
-            dit_modules.append(module_obj)
-            dit_names.append(attr)
+        dit_attrs = getattr(pipeline, "_dit_modules", ModuleDiscovery.DIT_ATTRS)
+        dit_modules, dit_names = ModuleDiscovery._get_named_modules(pipeline, dit_attrs)
 
         # Collect all encoders
-        encoders: list[nn.Module] = []
-        encoder_names: list[str] = []
-        for attr in ModuleDiscovery.ENCODER_ATTRS:
-            if hasattr(pipeline, attr) and getattr(pipeline, attr) is not None:
-                encoders.append(getattr(pipeline, attr))
-                encoder_names.append(attr)
+        encoder_attrs = getattr(pipeline, "_encoder_modules", ModuleDiscovery.ENCODER_ATTRS)
+        encoders, encoder_names = ModuleDiscovery._get_named_modules(pipeline, encoder_attrs)
 
         # Collect VAE
         vae = None
-        for attr in ModuleDiscovery.VAE_ATTRS:
+        vae_attrs = getattr(pipeline, "_vae_modules", ModuleDiscovery.VAE_ATTRS)
+        for attr in vae_attrs:
             module = getattr(pipeline, attr, None)
             if module is not None:
+                if not isinstance(module, nn.Module):
+                    logger.warning("Expected %s to be nn.Module, got %r", attr, type(module))
+                    continue
                 vae = module
                 break
+
+        resident_attrs = getattr(pipeline, "_resident_modules", [])
+        resident_modules, resident_names = ModuleDiscovery._get_named_modules(pipeline, resident_attrs)
 
         return PipelineModules(
             dits=dit_modules,
@@ -77,4 +88,6 @@ class ModuleDiscovery:
             encoders=encoders,
             encoder_names=encoder_names,
             vae=vae,
+            resident_modules=resident_modules,
+            resident_names=resident_names,
         )
