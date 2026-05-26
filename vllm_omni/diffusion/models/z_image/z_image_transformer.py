@@ -25,6 +25,7 @@ import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
+from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (
     MergedColumnParallelLinear,
     QKVParallelLinear,
@@ -32,8 +33,6 @@ from vllm.model_executor.layers.linear import (
     RowParallelLinear,
 )
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
-
-from vllm_omni.diffusion.layers.norm import RMSNorm
 
 if TYPE_CHECKING:
     from vllm.model_executor.layers.quantization.base_config import (
@@ -51,7 +50,6 @@ from vllm_omni.diffusion.forward_context import (
     is_forward_context_available,
 )
 from vllm_omni.diffusion.layers.rope import RotaryEmbedding, apply_rope_to_qk
-from vllm_omni.model_executor.layers.timestep_embedding import timestep_embedding
 
 ADALN_EMBED_DIM = 256
 SEQ_MULTI_OF = 32
@@ -216,14 +214,12 @@ class TimestepEmbedder(nn.Module):
         super().__init__()
         if mid_size is None:
             mid_size = out_size
-        # Time embedding MLP is kept full precision (quant_config=None) —
-        # small layers that feed adaLN; precision-sensitive (see #2728).
         self.mlp = nn.Sequential(
             ReplicatedLinear(
                 frequency_embedding_size,
                 mid_size,
                 bias=True,
-                quant_config=None,
+                quant_config=quant_config,
                 return_bias=False,
             ),
             nn.SiLU(),
@@ -231,15 +227,27 @@ class TimestepEmbedder(nn.Module):
                 mid_size,
                 out_size,
                 bias=True,
-                quant_config=None,
+                quant_config=quant_config,
                 return_bias=False,
             ),
         )
 
         self.frequency_embedding_size = frequency_embedding_size
 
+    @staticmethod
+    def timestep_embedding(t, dim, max_period=10000):
+        half = dim // 2
+        freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device) / half
+        )
+        args = t[:, None].float() * freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
+
     def forward(self, t):
-        t_freq = timestep_embedding(t, self.frequency_embedding_size)
+        t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         weight_dtype = self.mlp[0].bias.dtype
         if weight_dtype.is_floating_point:
             t_freq = t_freq.to(weight_dtype)
@@ -418,16 +426,9 @@ class ZImageTransformerBlock(nn.Module):
 
         self.modulation = modulation
         if modulation:
-            # Modulation linear is kept at full precision (quant_config=None)
-            # — it produces scale/gate values that are precision-sensitive
-            # (see #2728, mirrors OmniGen2 fix).
             self.adaLN_modulation = nn.Sequential(
                 ReplicatedLinear(
-                    min(dim, ADALN_EMBED_DIM),
-                    4 * dim,
-                    bias=True,
-                    quant_config=None,
-                    return_bias=False,
+                    min(dim, ADALN_EMBED_DIM), 4 * dim, bias=True, return_bias=False, quant_config=quant_config
                 ),
             )
 
@@ -484,24 +485,14 @@ class FinalLayer(nn.Module):
     def __init__(self, hidden_size, out_channels, quant_config: "QuantizationConfig | None" = None):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        # Final output projection and its modulation are precision-sensitive
-        # (produce the output latent); keep at full precision (see #2728).
         self.linear = ReplicatedLinear(
-            hidden_size,
-            out_channels,
-            bias=True,
-            quant_config=None,
-            return_bias=False,
+            hidden_size, out_channels, bias=True, quant_config=quant_config, return_bias=False
         )
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             ReplicatedLinear(
-                min(hidden_size, ADALN_EMBED_DIM),
-                hidden_size,
-                bias=True,
-                quant_config=None,
-                return_bias=False,
+                min(hidden_size, ADALN_EMBED_DIM), hidden_size, bias=True, quant_config=quant_config, return_bias=False
             ),
         )
 
@@ -588,7 +579,6 @@ class ZImageTransformer2DModel(CachedTransformer):
     """
 
     _repeated_blocks = ["ZImageTransformerBlock"]
-    _layerwise_offload_blocks_attrs = ["layers"]
 
     @staticmethod
     def _is_transformer_block(name: str, module) -> bool:
@@ -682,13 +672,11 @@ class ZImageTransformer2DModel(CachedTransformer):
         all_x_embedder = {}
         all_final_layer = {}
         for patch_idx, (patch_size, f_patch_size) in enumerate(zip(all_patch_size, all_f_patch_size)):
-            # x_embedder (patch embed) is a small precision-sensitive entry
-            # layer; keep full precision (see #2728).
             x_embedder = ReplicatedLinear(
                 f_patch_size * patch_size * patch_size * in_channels,
                 dim,
                 bias=True,
-                quant_config=None,
+                quant_config=quant_config,
                 return_bias=False,
             )
             all_x_embedder[f"{patch_size}-{f_patch_size}"] = x_embedder
@@ -731,17 +719,9 @@ class ZImageTransformer2DModel(CachedTransformer):
             ]
         )
         self.t_embedder = TimestepEmbedder(min(dim, ADALN_EMBED_DIM), mid_size=1024, quant_config=quant_config)
-        # Caption embedder maps text features -> hidden; keep full precision
-        # (see #2728).
         self.cap_embedder = nn.Sequential(
             RMSNorm(cap_feat_dim, eps=norm_eps),
-            ReplicatedLinear(
-                cap_feat_dim,
-                dim,
-                bias=True,
-                quant_config=None,
-                return_bias=False,
-            ),
+            ReplicatedLinear(cap_feat_dim, dim, bias=True, return_bias=False, quant_config=quant_config),
         )
 
         self.x_pad_token = nn.Parameter(torch.empty((1, dim)))

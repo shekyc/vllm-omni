@@ -1,4 +1,4 @@
-# Adding Step Execution Support for Diffusion Pipelines
+# Diffusion Step Execution
 
 This guide documents vLLM-Omni's stepwise diffusion contract for model authors
 and contributors implementing `step_execution=True` support for a diffusion
@@ -7,19 +7,11 @@ pipeline.
 For end-user enablement, supported models, and current limitations, see
 [Step Execution](../../user_guide/diffusion/step_execution.md).
 
-This document describes the base step-execution contract only. For the
-experimental batching policy layered on top of the step-wise path, see
-[Continuous Batching for Step-Wise Diffusion](diffusion_continuous_batching.md).
-
 ## Current Support Scope
 
 `step_execution` is **not** a generic diffusion toggle. It only works for
 pipelines that implement the segmented stateful contract in
 [`vllm_omni/diffusion/models/interface.py`](gh-file:vllm_omni/diffusion/models/interface.py).
-
-This page is intentionally author-facing. Treat runtime enablement
-(`step_execution=True` in Python or `--step-execution` in serving) as an
-opt-in user knob layered on top of the implementation contract below.
 
 Current in-tree support:
 
@@ -30,9 +22,7 @@ Current in-tree support:
 
 Current engine/runtime limitations:
 
-- Continuous batching with `max_num_seqs > 1` is experimental and documented in
-  [Continuous Batching for Step-Wise Diffusion](diffusion_continuous_batching.md).
-  Keep `max_num_seqs=1` if you want the older conservative behavior.
+- `StepScheduler` only schedules `batch_size=1`.
 - `cache_backend` is not supported in step mode.
 - Request-mode extras such as KV transfer are not wired into step mode yet.
 - Unsupported pipelines now fail early during model loading instead of failing on the first request.

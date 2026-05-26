@@ -10,7 +10,7 @@ from vllm_omni.diffusion.request import OmniDiffusionRequest
 
 if TYPE_CHECKING:
     from vllm_omni.diffusion.sched.interface import DiffusionSchedulerOutput
-    from vllm_omni.diffusion.worker.utils import BaseRunnerOutput
+    from vllm_omni.diffusion.worker.utils import RunnerOutput
 
 
 class DiffusionExecutor(ABC):
@@ -22,10 +22,6 @@ class DiffusionExecutor(ABC):
     def get_class(od_config: OmniDiffusionConfig) -> type[DiffusionExecutor]:
         executor_class: type[DiffusionExecutor]
         distributed_executor_backend = od_config.distributed_executor_backend
-        # Keep backward-compatible behavior for callers/configs that omit this
-        # field and rely on the historical diffusion default backend.
-        if distributed_executor_backend is None:
-            distributed_executor_backend = "mp"
 
         if isinstance(distributed_executor_backend, type):
             if not issubclass(distributed_executor_backend, DiffusionExecutor):
@@ -74,12 +70,12 @@ class DiffusionExecutor(ABC):
         pass
 
     @abstractmethod
-    def execute_request(self, scheduler_output: DiffusionSchedulerOutput) -> BaseRunnerOutput:
+    def execute_request(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
         """Execute request-mode work from a scheduler output."""
         pass
 
     @abstractmethod
-    def execute_step(self, scheduler_output: DiffusionSchedulerOutput) -> BaseRunnerOutput:
+    def execute_step(self, scheduler_output: DiffusionSchedulerOutput) -> RunnerOutput:
         """Execute step-mode work from a scheduler output."""
         pass
 
